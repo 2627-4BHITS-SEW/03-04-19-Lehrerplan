@@ -1,7 +1,7 @@
-
 using System;
 using System.Collections.Generic;
 using System.Net.Http;
+using System.Net.Security;
 using System.Text.RegularExpressions;
 using TMPro;
 using UnityEngine;
@@ -14,7 +14,28 @@ public class TeacherInformation : MonoBehaviour
     private const string BaseUrl = "https://www.htl-salzburg.ac.at";
     private const string ListUrl = BaseUrl + "/lehrerinnen.html";
 
-    private readonly HttpClient client = new HttpClient();
+    // NUR FÜR LOKALE TESTS!
+    private readonly HttpClient client = new HttpClient(
+        new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback =
+                (request, cert, chain, errors) =>
+                {
+                    // Normale Zertifikate akzeptieren
+                    if (errors == SslPolicyErrors.None)
+                        return true;
+
+                    // Temporär ungültige Zertifikate
+                    // ausschließlich für die HTL-Domain akzeptieren
+                    return request.RequestUri != null
+                        && request.RequestUri.Scheme == "https"
+                        && request.RequestUri.Host.Equals(
+                            "www.htl-salzburg.ac.at",
+                            StringComparison.OrdinalIgnoreCase);
+                }
+        }
+    );
+
     private string currentRoom = "";
 
     void Start()
