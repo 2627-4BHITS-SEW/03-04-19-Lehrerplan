@@ -14,27 +14,16 @@ public class TeacherInformation : MonoBehaviour
     private const string BaseUrl = "https://www.htl-salzburg.ac.at";
     private const string ListUrl = BaseUrl + "/lehrerinnen.html";
 
-    // NUR FÜR LOKALE TESTS!
-    private readonly HttpClient client = new HttpClient(
-        new HttpClientHandler
-        {
-            ServerCertificateCustomValidationCallback =
-                (request, cert, chain, errors) =>
-                {
-                    // Normale Zertifikate akzeptieren
-                    if (errors == SslPolicyErrors.None)
-                        return true;
+    private HttpClient client;
 
-                    // Temporär ungültige Zertifikate
-                    // ausschließlich für die HTL-Domain akzeptieren
-                    return request.RequestUri != null
-                        && request.RequestUri.Scheme == "https"
-                        && request.RequestUri.Host.Equals(
-                            "www.htl-salzburg.ac.at",
-                            StringComparison.OrdinalIgnoreCase);
-                }
-        }
-    );
+    void Awake()
+    {
+        var issuer = Resources.Load<TextAsset>("Certificates/GlobalSignAlphaSSL2025");
+        if (issuer == null) throw new InvalidOperationException("Das SSL-Zwischenzertifikat fehlt im Projekt.");
+        var root = Resources.Load<TextAsset>("Certificates/GlobalSignRootR46");
+        if (root == null) throw new InvalidOperationException("Das SSL-Stammzertifikat fehlt im Projekt.");
+        client = SchoolHttp.CreateClient(issuer.bytes, root.bytes);
+    }
 
     private string currentRoom = "";
 
