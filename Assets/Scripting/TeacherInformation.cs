@@ -1,20 +1,26 @@
 using System;
 using System.Collections.Generic;
 using System.Net.Http;
-using System.Net.Security;
+using System.Text;
 using System.Text.RegularExpressions;
 using TMPro;
 using UnityEngine;
+using UnityEngine.UI;
 
 public class TeacherInformation : MonoBehaviour
 {
     [SerializeField] GameObject panel;
     [SerializeField] TMP_Text text;
-
-    private const string BaseUrl = "https://www.htl-salzburg.ac.at";
-    private const string ListUrl = BaseUrl + "/lehrerinnen.html";
-
-    private HttpClient client;
+    [SerializeField] TMP_Text roomTitle;
+    [SerializeField] TMP_Text status;
+    [SerializeField] ScrollRect scroll;
+    const string BaseUrl = "https://www.htl-salzburg.ac.at";
+    HttpClient client;
+    readonly Dictionary<string, string> cache = new Dictionary<string, string>();
+    readonly List<Collider2D> rooms = new List<Collider2D>();
+    string currentRoom = "";
+    string listHtml;
+    int requestVersion;
 
     void Awake()
     {
@@ -25,87 +31,101 @@ public class TeacherInformation : MonoBehaviour
         client = SchoolHttp.CreateClient(issuer.bytes, root.bytes);
     }
 
-    private string currentRoom = "";
+    void Start() { panel.SetActive(false); }
 
-    void Start()
+    void OnTriggerEnter2D(Collider2D collision)
     {
-        panel.SetActive(false);
-    }
-
-    async void OnTriggerEnter2D(Collider2D collision)
-    {
-        string room = collision.gameObject.name;
-        currentRoom = room;
-
-        panel.SetActive(true);
-        text.text = "Lade Lehrer...";
-
-        try
-        {
-            string listHtml = await client.GetStringAsync(ListUrl);
-
-            List<string> links =
-                TeacherParser.ParseTeacherLinks(listHtml, room);
-
-            string result = "LEHRERZIMMER: " + room + "\n\n";
-
-            foreach (string link in links)
-            {
-                try
-                {
-                    Uri url = new Uri(new Uri(BaseUrl), link);
-
-                    string html = await client.GetStringAsync(url);
-
-                    TeacherData teacher =
-                        TeacherParser.ParseTeacherDetails(html);
-
-                    if (NormalizeRoom(teacher.roomNumber) !=
-                        NormalizeRoom(room))
-                        continue;
-
-                    result += teacher.name + "\n";
-                    result += "Tel-DW: " + teacher.phone + "\n";
-                    result += "Sprechstunde: " +
-                              teacher.consultationHours + "\n";
-                    result += "E-Mail: " + teacher.email + "\n\n";
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogError(ex.ToString());
-                }
-            }
-
-            if (currentRoom == room)
-                text.text = result;
-        }
-        catch (Exception ex)
-        {
-            Debug.LogError(ex.ToString());
-
-            if (currentRoom == room)
-                text.text = "Fehler beim Laden der Lehrer.";
-        }
+        if (!Regex.IsMatch(collision.name, @"^[BC]\s?\d{3}$")) return;
+        if (!rooms.Contains(collision)) rooms.Add(collision);
+        ShowRoom(collision.name);
     }
 
     void OnTriggerExit2D(Collider2D collision)
     {
-        if (currentRoom != collision.gameObject.name)
-            return;
+        if (!rooms.Remove(collision)) return;
+        if (rooms.Count > 0) ShowRoom(rooms[rooms.Count - 1].name);
+        else CloseRoom();
+    }
 
+    public void CloseRoom()
+    {
+        ++requestVersion;
         currentRoom = "";
-        panel.SetActive(false);
-        text.text = "";
+        if (panel) panel.SetActive(false);
     }
 
-    static string NormalizeRoom(string room)
+    void Update() { if (Input.GetKeyDown(KeyCode.Escape)) CloseRoom(); }
+
+    async void ShowRoom(string room)
     {
-        return Regex.Replace(
-            room.ToUpperInvariant(), @"[\s_-]", "");
+        room = NormalizeRoom(room);
+        if (currentRoom == room) return;
+        currentRoom = room;
+        int version = ++requestVersion;
+        panel.SetActive(true);
+        roomTitle.text = "Raum " + room;
+        status.text = "Lehrkräfte & Sprechstunden";
+        SetText("Lehrkräfte werden geladen …");
+        if (cache.TryGetValue(room, out string cached)) { SetText(cached); return; }
+        try
+        {
+            if (listHtml == null) listHtml = await client.GetStringAsync(BaseUrl + "/lehrerinnen.html");
+            var links = TeacherParser.ParseTeacherLinks(listHtml, room);
+            var teachers = new List<TeacherData>();
+            int failed = 0;
+            foreach (string link in links)
+            {
+                if (!this || version != requestVersion) return;
+                try
+                {
+                    var uri = new Uri(new Uri(BaseUrl), link);
+                    if (uri.Scheme != "https" || uri.Host != "www.htl-salzburg.ac.at") continue;
+                    var teacher = TeacherParser.ParseTeacherDetails(await client.GetStringAsync(uri));
+                    if (NormalizeRoom(teacher.roomNumber) == room) teachers.Add(teacher);
+                }
+                catch (Exception ex) { ++failed; Debug.LogWarning(ex.ToString()); }
+            }
+            teachers.Sort((a, b) => string.Compare(a.name, b.name, StringComparison.CurrentCultureIgnoreCase));
+            var result = new StringBuilder();
+            foreach (var teacher in teachers)
+            {
+                result.Append("<b><size=24>").Append(Safe(teacher.name)).Append("</size></b>\n");
+                result.Append("<color=#167D8D>Sprechstunde</color>\n").Append(Safe(teacher.consultationHours)).Append("\n");
+                result.Append("<size=18><color=#526478>Tel-DW: ").Append(Safe(teacher.phone)).Append("\n");
+                result.Append(Safe(teacher.email)).Append("</color></size>\n\n");
+            }
+            if (teachers.Count == 0) result.Append(failed > 0 ? "Die Lehrerdaten konnten nicht vollständig geladen werden. Bitte den Raum erneut betreten." : "Für diesen Raum sind keine Lehrkräfte in der Schulübersicht hinterlegt.");
+            else if (failed > 0) result.Append("<size=18>Einige Einträge konnten nicht geladen werden. Bitte später erneut versuchen.</size>");
+            if (!this || version != requestVersion) return;
+            string body = result.ToString();
+            if (failed == 0) cache[room] = body;
+            status.text = teachers.Count + " Lehrkräfte · Sprechstunden laut Schulwebsite";
+            SetText(body);
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning(ex.ToString());
+            if (this && version == requestVersion)
+            {
+                status.text = "Verbindung zur Schulwebsite fehlgeschlagen";
+                SetText("Die Lehrerdaten sind gerade nicht erreichbar.\n\nPrüfe die Internetverbindung und betritt den Raum erneut.");
+            }
+        }
     }
 
-    void OnDestroy()
+    void SetText(string value)
     {
-        client.Dispose();
+        text.text = value;
+        Canvas.ForceUpdateCanvases();
+        LayoutRebuilder.ForceRebuildLayoutImmediate(text.rectTransform);
+        if (scroll)
+        {
+            LayoutRebuilder.ForceRebuildLayoutImmediate((RectTransform)scroll.transform);
+            scroll.StopMovement();
+            scroll.verticalNormalizedPosition = 1;
+        }
     }
+    static string Safe(string value) => string.IsNullOrWhiteSpace(value) || value == "-" ? "Nicht angegeben" : value.Replace("<", "‹").Replace(">", "›");
+    static string NormalizeRoom(string room) => Regex.Replace((room ?? "").ToUpperInvariant(), @"[\s_-]", "");
+    void OnDestroy() { ++requestVersion; client?.Dispose(); }
 }
